@@ -1,0 +1,245 @@
+<script type="text/javascript">
+        var gk_isXlsx = false;
+        var gk_xlsxFileLookup = {};
+        var gk_fileData = {};
+        function filledCell(cell) {
+          return cell !== '' && cell != null;
+        }
+        function loadFileData(filename) {
+        if (gk_isXlsx && gk_xlsxFileLookup[filename]) {
+            try {
+                var workbook = XLSX.read(gk_fileData[filename], { type: 'base64' });
+                var firstSheetName = workbook.SheetNames[0];
+                var worksheet = workbook.Sheets[firstSheetName];
+
+                // Convert sheet to JSON to filter blank rows
+                var jsonData = XLSX.utils.sheet_to_json(worksheet, { header: 1, blankrows: false, defval: '' });
+                // Filter out blank rows (rows where all cells are empty, null, or undefined)
+                var filteredData = jsonData.filter(row => row.some(filledCell));
+
+                // Heuristic to find the header row by ignoring rows with fewer filled cells than the next row
+                var headerRowIndex = filteredData.findIndex((row, index) =>
+                  row.filter(filledCell).length >= filteredData[index + 1]?.filter(filledCell).length
+                );
+                // Fallback
+                if (headerRowIndex === -1 || headerRowIndex > 25) {
+                  headerRowIndex = 0;
+                }
+
+                // Convert filtered JSON back to CSV
+                var csv = XLSX.utils.aoa_to_sheet(filteredData.slice(headerRowIndex)); // Create a new sheet from filtered array of arrays
+                csv = XLSX.utils.sheet_to_csv(csv, { header: 1 });
+                return csv;
+            } catch (e) {
+                console.error(e);
+                return "";
+            }
+        }
+        return gk_fileData[filename] || "";
+        }
+        </script><!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>彈彈的愛上遊戲系統</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <style>
+    canvas {
+      border: 2px solid #000;
+    }
+  </style>
+</head>
+<body class="bg-gray-100 flex flex-col items-center justify-center min-h-screen">
+  <h1 class="text-4xl font-bold text-blue-600 mb-4">彈彈的愛上遊戲系統</h1>
+  <canvas id="gameCanvas" width="600" height="600"></canvas>
+  <div class="mt-4 text-lg text-gray-800">
+    <p>控制方式：WASD或箭頭鍵移動，空格鍵放置炸彈</p>
+    <p>目標：炸毀軟牆（+10分），擊敗敵人（+50分），避免被敵人或爆炸波及</p>
+    <p id="score">得分：0</p>
+    <p id="gameOver" class="hidden text-red-600 font-bold">遊戲結束！按R重新開始</p>
+  </div>
+
+  <script>
+    const canvas = document.getElementById('gameCanvas');
+    const ctx = canvas.getContext('2d');
+    const gridSize = 40;
+    const rows = canvas.height / gridSize;
+    const cols = canvas.width / gridSize;
+    let score = 0;
+    let gameOver = false;
+
+    // 地圖：0=空地, 1=硬牆, 2=軟牆, 3=玩家, 4=炸彈, 5=敵人, 6=爆炸
+    let map = [];
+    const player = { x: 1, y: 1, alive: true };
+    const bombs = [];
+    const enemies = [];
+    const explosions = [];
+
+    // 初始化地圖
+    function initMap() {
+      map = [];
+      for (let y = 0; y < rows; y++) {
+        map[y] = [];
+        for (let x = 0; x < cols; x++) {
+          if (x === 0 || y === 0 || x === cols - 1 || y === rows - 1 || (x % 2 === 0 && y % 2 === 0)) {
+            map[y][x] = 1; // 硬牆
+          } else if (Math.random() < 0.4 && !(x <= 2 && y <= 2)) {
+            map[y][x] = 2; // 軟牆
+          } else {
+            map[y][x] = 0; // 空地
+          }
+        }
+      }
+      map[1][1] = 3; // 玩家初始位置
+      // 添加敵人
+      for (let i = 0; i < 3; i++) {
+        let ex, ey;
+        do {
+          ex = Math.floor(Math.random() * cols);
+          ey = Math.floor(Math.random() * rows);
+        } while (map[ey][ex] !== 0 || (ex <= 2 && ey <= 2));
+        enemies.push({ x: ex, y: ey });
+        map[ey][ex] = 5;
+      }
+    }
+
+    // 繪製遊戲
+    function draw() {
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+      for (let y = 0; y < rows; y++) {
+        for (let x = 0; x < cols; x++) {
+          ctx.fillStyle = map[y][x] === 1 ? '#333' : map[y][x] === 2 ? '#8B4513' : map[y][x] === 3 ? '#00F' : 
+                          map[y][x] === 4 ? '#F00' : map[y][x] === 5 ? '#FF0' : map[y][x] === 6 ? '#FFA500' : '#FFF';
+          ctx.fillRect(x * gridSize, y * gridSize, gridSize, gridSize);
+          ctx.strokeStyle = '#000';
+          ctx.strokeRect(x * gridSize, y * gridSize, gridSize, gridSize);
+        }
+      }
+      document.getElementById('score').textContent = `得分：${score}`;
+      if (gameOver) {
+        document.getElementById('gameOver').classList.remove('hidden');
+      }
+    }
+
+    // 玩家移動
+    function movePlayer(dx, dy) {
+      if (gameOver) return;
+      const newX = player.x + dx;
+      const newY = player.y + dy;
+      if (newX >= 0 && newX < cols && newY >= 0 && newY < rows && map[newY][newX] === 0) {
+        map[player.y][player.x] = 0;
+        player.x = newX;
+        player.y = newY;
+        map[player.y][player.x] = 3;
+      }
+    }
+
+    // 放置炸彈
+    function placeBomb() {
+      if (gameOver || bombs.length > 0) return;
+      bombs.push({ x: player.x, y: player.y, timer: 180 }); // 3秒（60fps * 3）
+      map[player.y][player.x] = 4;
+    }
+
+    // 更新炸彈
+    function updateBombs() {
+      for (let i = bombs.length - 1; i >= 0; i--) {
+        bombs[i].timer--;
+        if (bombs[i].timer <= 0) {
+          explode(bombs[i]);
+          bombs.splice(i, 1);
+        }
+      }
+    }
+
+    // 炸彈爆炸
+    function explode(bomb) {
+      const directions = [[0, 0], [0, -1], [0, 1], [-1, 0], [1, 0]];
+      explosions.push({ x: bomb.x, y: bomb.y, timer: 30 }); // 爆炸效果持續0.5秒
+      map[bomb.y][bomb.x] = 6;
+      for (let dir of directions) {
+        const x = bomb.x + dir[0];
+        const y = bomb.y + dir[1];
+        if (x >= 0 && x < cols && y >= 0 && y < rows && map[y][x] !== 1) {
+          if (map[y][x] === 2) {
+            score += 10; // 炸毀軟牆
+          } else if (map[y][x] === 5) {
+            score += 50; // 擊敗敵人
+            enemies.splice(enemies.findIndex(e => e.x === x && e.y === y), 1);
+          } else if (map[y][x] === 3) {
+            player.alive = false;
+            gameOver = true;
+          }
+          map[y][x] = 6;
+          explosions.push({ x, y, timer: 30 });
+        }
+      }
+    }
+
+    // 更新爆炸效果
+    function updateExplosions() {
+      for (let i = explosions.length - 1; i >= 0; i--) {
+        explosions[i].timer--;
+        if (explosions[i].timer <= 0) {
+          if (map[explosions[i].y][explosions[i].x] === 6) {
+            map[explosions[i].y][explosions[i].x] = 0;
+          }
+          explosions.splice(i, 1);
+        }
+      }
+    }
+
+    // 敵人移動
+    function moveEnemies() {
+      for (let enemy of enemies) {
+        const directions = [[0, -1], [0, 1], [-1, 0], [1, 0]];
+        const dir = directions[Math.floor(Math.random() * directions.length)];
+        const newX = enemy.x + dir[0];
+        const newY = enemy.y + dir[1];
+        if (newX >= 0 && newX < cols && newY >= 0 && newY < rows && map[newY][newX] === 0) {
+          map[enemy.y][enemy.x] = 0;
+          enemy.x = newX;
+          enemy.y = newY;
+          map[enemy.y][newX] = 5;
+        }
+        if (enemy.x === player.x && enemy.y === player.y) {
+          player.alive = false;
+          gameOver = true;
+        }
+      }
+    }
+
+    // 鍵盤控制
+    document.addEventListener('keydown', (e) => {
+      if (gameOver && e.key === 'r') {
+        score = 0;
+        gameOver = false;
+        document.getElementById('gameOver').classList.add('hidden');
+        initMap();
+      } else if (!gameOver) {
+        if (e.key === 'ArrowUp' || e.key === 'w') movePlayer(0, -1);
+        if (e.key === 'ArrowDown' || e.key === 's') movePlayer(0, 1);
+        if (e.key === 'ArrowLeft' || e.key === 'a') movePlayer(-1, 0);
+        if (e.key === 'ArrowRight' || e.key === 'd') movePlayer(1, 0);
+        if (e.key === ' ') placeBomb();
+      }
+    });
+
+    // 遊戲主迴圈
+    function gameLoop() {
+      if (!gameOver) {
+        moveEnemies();
+        updateBombs();
+        updateExplosions();
+      }
+      draw();
+      requestAnimationFrame(gameLoop);
+    }
+
+    // 啟動遊戲
+    initMap();
+    gameLoop();
+  </script>
+</body>
+</html>
